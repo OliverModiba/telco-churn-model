@@ -1,0 +1,90 @@
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning=FALSE, message=FALSE)
+
+library(tidyverse)
+library(caret)
+library(randomForest)
+library(DALEX)
+library(data.table)
+library(pROC)
+library(e1071) # For confusionMatrix
+
+
+data <- fread("C:/bitbucket/2025/Customer_Retention/Telco-Customer-Churn.csv")
+
+# Clean and inspect
+data$TotalCharges <- as.numeric(data$TotalCharges)
+data <- data %>% mutate_if(is.character, as.factor)
+data <- na.omit(data)
+
+glimpse(data)
+summary(data)
+
+
+set.seed(123)
+trainIndex <- createDataPartition(data$Churn, p=0.7, list=FALSE)
+train <- data[trainIndex, ]
+test <- data[-trainIndex, ]
+
+# Remove ID and make Churn binary factor
+train <- train %>% select(-customerID)
+test <- test %>% select(-customerID)
+
+train$Churn <- factor(train$Churn, levels=c("No", "Yes"))
+test$Churn <- factor(test$Churn, levels=c("No", "Yes"))
+
+
+
+set.seed(123)
+model_glm <- train(
+  Churn ~ ., 
+  data = train,
+  method = "glm",
+  family = "binomial",
+  trControl = trainControl(method = "none", classProbs = TRUE)
+)
+
+# Predict probabilities and classes
+pred_probs <- predict(model_glm, newdata=test, type="prob")[, "Yes"]
+pred_class <- factor(ifelse(pred_probs > 0.5, "Yes", "No"), levels = c("No", "Yes"))
+
+# Confusion Matrix
+conf_matrix <- confusionMatrix(pred_class, test$Churn, positive = "Yes")
+print(conf_matrix)
+
+# ROC and AUC
+roc_obj <- roc(response=test$Churn, predictor=pred_probs)
+plot(roc_obj, col="blue", main="ROC Curve - Logistic Regression")
+print(auc(roc_obj))
+
+
+# Convert factors for DALEX (dummy encoding)
+train_dummy <- model.matrix(Churn ~ . -1, data=train)
+test_dummy <- model.matrix(Churn ~ . -1, data=test)
+
+# Rebuild model with dummy data
+train_df <- as.data.frame(train_dummy)
+train_df$Churn <- train$Churn
+
+model_glm_dalex <- glm(Churn ~ ., data = train_df, family = binomial)
+
+# Build explainer
+explainer_glm <- explain(
+  model = model_glm_dalex,
+  data = as.data.frame(test_dummy),
+  y = as.numeric(test$Churn == "Yes"),
+  label = "Logistic Regression"
+)
+
+# Model Performance
+mp <- model_performance(explainer_glm)
+plot(mp)
+
+# Feature Importance
+fi <- model_parts(explainer_glm)
+plot(fi, max_vars=10)
+
+
+
+
+
